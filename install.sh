@@ -56,6 +56,10 @@ fi
 
 echo ""
 echo -e "${BOLD}=== TEMPLATE: Project name — system dependencies ===${NC}"
+WHAT_INSTALLING=()
+[[ "$INSTALL_PRIMARY"   -eq 1 ]] && WHAT_INSTALLING+=("primary")
+[[ "$INSTALL_SECONDARY" -eq 1 ]] && WHAT_INSTALLING+=("secondary")
+info "Installing: $(IFS='+'; echo "${WHAT_INSTALLING[*]}")"
 echo ""
 
 echo "--- package lists (TEMPLATE: edit) ---"
@@ -91,8 +95,42 @@ else
     ok "common packages installed"
 fi
 
-# TEMPLATE: optional — uv, lang runtimes, services (reuse snippets from your stack)
-# if command -v uv &>/dev/null; then ok "uv present"; else ...; fi
+# ── uv + Python (optional) ────────────────────────────────────────────────────
+# TEMPLATE: Remove this section if your project does not use Python.
+
+echo ""
+echo "--- uv + Python (optional) ---"
+
+if command -v uv &>/dev/null; then
+    ok "uv already present: $(uv --version)"
+else
+    if curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh; then
+        ok "uv installed: $(uv --version)"
+    else
+        warn "uv install failed — skipping Python setup"
+    fi
+fi
+
+if command -v uv &>/dev/null; then
+    uv python install 3.12
+
+    PYTHON_BIN="$(uv python find 3.12 2>/dev/null || uv python find)"
+    PYTHON_LIB_DIR="$(realpath "$(dirname "$PYTHON_BIN")/../lib")"
+
+    # Register with runtime dynamic linker
+    echo "$PYTHON_LIB_DIR" > /etc/ld.so.conf.d/uv-python.conf
+    ldconfig
+    ok "libpython registered with ldconfig: $PYTHON_LIB_DIR"
+
+    # Create unversioned linker symlink if missing (needed by build-time linkers)
+    if [[ ! -e /usr/lib/x86_64-linux-gnu/libpython3.12.so ]]; then
+        ln -sf libpython3.12.so.1.0 /usr/lib/x86_64-linux-gnu/libpython3.12.so
+        ok "linker symlink: /usr/lib/x86_64-linux-gnu/libpython3.12.so -> libpython3.12.so.1.0"
+    else
+        ok "linker symlink already present: /usr/lib/x86_64-linux-gnu/libpython3.12.so"
+    fi
+    ldconfig
+fi
 
 echo ""
 echo "--- optional script hooks (TEMPLATE) ---"
@@ -119,18 +157,59 @@ if [[ -f "$TOOLCHAIN_SCRIPT" ]]; then
 fi
 
 echo ""
-echo "--- runtime directories (TEMPLATE paths) ---"
+echo "--- runtime directories ---"
 OWNER="${SUDO_USER:-root}"
-mkdir -p "$SCRIPT_DIR/logs"
-chown "$OWNER":"$OWNER" "$SCRIPT_DIR/logs" 2>/dev/null || true
-ok "logs/ ready"
+
+create_dir() {
+    local dir="$1"
+    if [[ ! -d "$dir" ]]; then
+        mkdir -p "$dir"
+        chown "$OWNER":"$OWNER" "$dir"
+        ok "created $dir"
+    else
+        ok "$dir already exists"
+    fi
+}
+
+create_dir "$SCRIPT_DIR/logs"
+
+# TEMPLATE: Create additional runtime directories your project needs.
+# [[ "$INSTALL_PRIMARY"   -eq 1 ]] && create_dir "$SCRIPT_DIR/data"
+# [[ "$INSTALL_SECONDARY" -eq 1 ]] && create_dir "$SCRIPT_DIR/cache"
 
 echo ""
 echo "--- binary checks (TEMPLATE: release artifact names) ---"
-# TEMPLATE: replace with your real binary names after first release build
-# check_binary "my-server" "$SCRIPT_DIR/target/release/my-server"
+
+check_binary() {
+    local name="$1" path="$2"
+    if [[ -x "$path" ]]; then
+        ok "$name binary found at $path"
+    else
+        warn "$name binary not found at $path"
+        # TEMPLATE: replace with your actual build command
+        echo "       Build with: <your build command> -p $name"
+    fi
+}
+
+# TEMPLATE: uncomment and replace with your actual binary names after first build
+# [[ "$INSTALL_PRIMARY"   -eq 1 ]] && check_binary "my-server" "$SCRIPT_DIR/target/release/my-server"
+# [[ "$INSTALL_SECONDARY" -eq 1 ]] && check_binary "my-client" "$SCRIPT_DIR/target/release/my-client"
 
 echo ""
 echo -e "${BOLD}=== Installation complete ===${NC}"
 echo ""
+
+# TEMPLATE: Replace with actual run commands for your project
+if [[ "$INSTALL_PRIMARY" -eq 1 ]]; then
+    echo "Primary component:"
+    echo "  # TEMPLATE: ./target/release/my-server --config config.toml"
+    echo ""
+fi
+
+if [[ "$INSTALL_SECONDARY" -eq 1 ]]; then
+    echo "Secondary component:"
+    echo "  # TEMPLATE: ./target/release/my-client"
+    echo ""
+fi
+
 echo "Next: clone as a normal user, run ./setup.sh, then see README.md and AGENTS.md."

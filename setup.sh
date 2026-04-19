@@ -182,18 +182,79 @@ else
     ok "Git identity: $GIT_USER <$GIT_EMAIL>"
 fi
 
+# TEMPLATE (Rust): cargo-sweep, cargo-nextest, and sccache are Rust-specific.
+# Remove these sections if your project does not use Rust/Cargo.
+
 if command -v cargo &>/dev/null; then
     echo ""
     echo "--- cargo-sweep (optional) ---"
     if command -v cargo-sweep &>/dev/null; then
         ok "cargo-sweep: $(cargo-sweep --version 2>/dev/null | head -1)"
     else
-        warn "cargo-sweep not found — loop.py can fall back to manual incremental cleanup"
-        if cargo install cargo-sweep --quiet 2>/dev/null; then
+        warn "cargo-sweep not found — installing (needed for auto build-cache cleanup)"
+        sweep_installed=false
+        for attempt in 1 2 3; do
+            echo "  attempt $attempt/3 ..."
+            if cargo install cargo-sweep 2>/tmp/cargo-sweep-install.log; then
+                sweep_installed=true
+                break
+            fi
+            sleep 2
+        done
+        if $sweep_installed; then
             ok "cargo-sweep installed"
         else
-            warn "cargo-sweep install failed — ignored"
+            warn "cargo-sweep install failed after 3 attempts — loop.py will fall back to manual cleanup"
+            echo "  To install manually: cargo install cargo-sweep"
+            echo "  Install log: /tmp/cargo-sweep-install.log"
         fi
+    fi
+
+    echo ""
+    echo "--- cargo-nextest (optional) ---"
+    if command -v cargo-nextest &>/dev/null; then
+        ok "cargo-nextest: $(cargo nextest --version 2>/dev/null | head -1)"
+    else
+        warn "cargo-nextest not found — installing (used by QA loop for faster test runs)"
+        if curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin 2>/dev/null; then
+            ok "cargo-nextest installed"
+        else
+            warn "cargo-nextest install failed — QA loop will fall back to cargo test"
+        fi
+    fi
+
+    echo ""
+    echo "--- sccache (optional) ---"
+    if command -v sccache &>/dev/null; then
+        ok "sccache: $(sccache --version 2>/dev/null | head -1)"
+    else
+        warn "sccache not found — installing (compiler cache that survives target/ wipes)"
+        SCCACHE_TAG=$(curl -sS https://api.github.com/repos/mozilla/sccache/releases/latest \
+            | grep '"tag_name"' | cut -d'"' -f4)
+        if [[ -z "$SCCACHE_TAG" ]]; then
+            warn "Could not fetch sccache release info — skipping"
+        else
+            SCCACHE_ARCHIVE="sccache-${SCCACHE_TAG}-x86_64-unknown-linux-musl.tar.gz"
+            SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/${SCCACHE_TAG}/${SCCACHE_ARCHIVE}"
+            SCCACHE_DIR="sccache-${SCCACHE_TAG}-x86_64-unknown-linux-musl"
+            if curl -LsSf "$SCCACHE_URL" \
+                    | tar -xz --strip-components=1 -C ~/.cargo/bin "${SCCACHE_DIR}/sccache" 2>/dev/null; then
+                ok "sccache ${SCCACHE_TAG} installed"
+            else
+                warn "sccache install failed — builds will still work, just no compiler cache"
+            fi
+        fi
+    fi
+
+    CARGO_CONFIG="$HOME/.cargo/config.toml"
+    mkdir -p "$HOME/.cargo"
+    if grep -q "rustc-wrapper" "$CARGO_CONFIG" 2>/dev/null; then
+        ok "cargo config: rustc-wrapper already set in $CARGO_CONFIG"
+    elif command -v sccache &>/dev/null; then
+        printf '\n[build]\nrustc-wrapper = "sccache"\n' >> "$CARGO_CONFIG"
+        ok "cargo config: rustc-wrapper = \"sccache\" written to $CARGO_CONFIG"
+    else
+        warn "sccache not available — skipping cargo config update"
     fi
 fi
 
@@ -214,3 +275,7 @@ echo "Agent loops (review):"
 echo "  ./loop.py --agent claude --loop qa"
 echo "  ./loop.py --agent claude --loop arch"
 echo "  ./loop.py --agent claude --loop quality"
+echo "  ./loop.py --agent claude --loop feature --zone main"
+echo ""
+echo "Maintenance:"
+echo "  ./loop.py --loop maintenance                          # hourly health checks"
